@@ -1,0 +1,6 @@
+pydantic
+pydantic-ai
+streamlit
+pytest
+openai
+python-dotenv
