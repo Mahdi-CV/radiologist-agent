@@ -31,7 +31,7 @@ pip install -r requirements.txt
 Copy the example `.env` file and fill in your model server details:
 
 ```bash
-cp .env.template .env
+cp .env.example .env
 ```
 
 Edit `.env`:
