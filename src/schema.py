@@ -7,7 +7,7 @@ class RadiologyReport(BaseModel):
         description="True if immediate clinical action is required"
     )
     diagnosis_description: str = Field(
-        description="Concise narrative of key findings and primary diagnosis"
+        description="In-depth description of the diagnosis and its implications"
     )
     clinical_recommendations: str = Field(
         description="Concrete next steps (imaging, biopsy, labs, referral)"
