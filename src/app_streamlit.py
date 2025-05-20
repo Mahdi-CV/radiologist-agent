@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import streamlit as st
 from pathlib import Path
 from pydantic_ai import Agent
@@ -43,45 +42,43 @@ TOOLS
                     critical:bool, img_path:str|None) -> {
                         subject, mimeType, body }
 
-FLOW
-A) Get image
-• If no image path: ask “Which image file should I analyse? (default = data/image.jpg)”
+You have 3 main responsibilities:
+1. Once you receive the result of "analyse_image_base64", you MUST output it using a markdown table with the following format:
 
-B) Analyse image
-• Once you have <PATH> call: {"name":"analyse_image_base64","arguments":{"path":"<PATH>"}}
+| Field           | Value                          |
+|----------------|----------------------------------|
+| Diagnosis       | <diagnosis_description>         |
+| Recommendations | <clinical_recommendations>      |
+| Critical        | <critical>                      |
 
-C) Present result
-DISPLAY THE RESULT of "analyse_image_base64" AS A MARKDOWN TABLE:Tool returns {critical, diagnosis_description, clinical_recommendations}
-• Show this summary before moving to D:
-    Diagnosis: <diagnosis_description>
-    Recommendations: <clinical_recommendations>
-    Critical: Yes/No
 
-D) Offer reference images ── ALWAYS happens first
-• Ask: “Would you like to view reference images from similar confirmed cases?”
-• If user replies yes/yep/“show them”… IMMEDIATELY call:
+2. If the user asks for reference images or similar images: 
+• IMMEDIATELY call:
     {"name":"show_reference_images_tool","arguments":{"confirm":"yes"}}
-• After the tool finishes —or if the user said “no” —continue to step E.
 
-E) Handle critical cases ── ONLY if critical == true
-• Ask: “This case is marked as critical. Would you like to draft a report for for peer review?”
-• If the user replies yes/yep/sure/etc, you MUST call this tool:
-    {"name":"draft_report_html",
-     "arguments":{
-        "diagnosis":"<diagnosis>",
-        "recs":"<recommendations>",
-        "critical":true,
-        "img_path":"<PATH>"
-     }}
+3. If the user asks for the report in a non-English language (e.g., Simplified Chinese, French, Spanish, etc.), you MUST:
+
+a. Translate the following fields into the requested language:
+   • diagnosis_description → diagnosis
+   • clinical_recommendations → recs
+   • critical → true/false (keep this boolean as-is, do not translate it)
+   
+b. Then call the tool:
+   {
+     "name": "draft_report_html",
+     "arguments": {
+       "diagnosis": "<translated diagnosis>",
+       "recs": "<translated recommendations>",
+       "critical": <critical>,
+       "img_path": "<PATH>"
+     }
+   }
 
 
 RULES
-• Do NOT generate or summarize report manually.
 • Never skip a step.
-• D must finish (or be declined) before E begins.
 • Never invent clinical data.
 """.strip()
-
 
 async def build_orchestrator():
     gmail_server = MCPServerStdio(
@@ -189,12 +186,11 @@ class StreamlitChatUI:
                                     if ev.result.tool_name == "show_reference_images_tool":
                                         self.show_reference_images()
                                     if ev.result.tool_name == "draft_report_html":
-                                        report_html = ev.result.output["body"]
-                                        self.show_html_report(report_html)
-                                        return  # Skip adding to chat history
+                                        report = ev.result.content  
+                                        report_html = report.get("body", "")
+                                        show_html_report(report_html)
 
                     elif Agent.is_model_request_node(node):
-                        # 👇 DO NOT stream updates line by line
                         async with node.stream(run.ctx) as s:
                             async for ev in s:
                                 if isinstance(ev, PartDeltaEvent) and isinstance(ev.delta, TextPartDelta):
@@ -243,6 +239,7 @@ def main():
             response_container = st.container()
             with st.spinner("Analyzing uploaded image..."):
                 asyncio.run(ui.process_upload_message(f"Analyze this image: {save_path}", response_container))
+
 
     st.divider()
     avatar_map = {"user": "🧑", "assistant": "🤖"}

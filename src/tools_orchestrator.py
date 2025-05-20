@@ -3,10 +3,6 @@ import base64, pathlib
 from radiology_agent import radiology_agent
 from jinja2 import Template
 
-
-DEFAULT_IMAGE = pathlib.Path("data/image.jpg").resolve()
-
-
 DEFAULT_SUBJECT   = "Peer Review Request"
 
 EMAIL_TMPL = Template("""
@@ -17,7 +13,7 @@ EMAIL_TMPL = Template("""
     <div style="background:#f8f9fa; padding:1rem; border-radius:4px;">
       <p><strong>Diagnosis:</strong> {{ diagnosis }}</p>
       <p><strong>Recommendations:</strong> {{ recs }}</p>
-      <p><strong>Critical Finding:</strong> {{ 'Yes' if critical else 'No' }}</p>
+      <p><strong>Critical Finding:</strong> {{ critical }}</p>
     </div>
 
     {% if img_tag %}
@@ -74,13 +70,10 @@ async def analyse_image_base64(path: str | None = None) -> dict:
     Parameters
     ----------
     path : str | None
-        Path to a JPEG.  If omitted ― or equal to a known placeholder like
-        'str' ― we fall back to data/image.jpg.
+        Path to a JPEG. 
     """
-    if path in (None, "", "str"):
-        path = DEFAULT_IMAGE
-    else:
-        path = pathlib.Path(path).expanduser().resolve()
+
+    path = pathlib.Path(path).expanduser().resolve()
 
     b64 = base64.b64encode(path.read_bytes()).decode()
 
