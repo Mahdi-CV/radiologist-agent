@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import streamlit as st
 from pathlib import Path
 from pydantic_ai import Agent
@@ -8,11 +9,28 @@ from pydantic_ai.messages import (
     FunctionToolCallEvent, FunctionToolResultEvent,
 )
 from config import orch_model
-from tools_orchestrator import analyse_image_base64, show_reference_images_tool
+from tools_orchestrator import analyse_image_base64, show_reference_images_tool, draft_report_html
+import re
 
 # ── Constants ─────────────────────────────────────────────────────────────
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
+
+def is_html_content(text: str) -> bool:
+    return bool(re.search(r"</?[a-z][\s\S]*>", text))
+
+def show_html_report(html: str):
+    report_container = st.container()
+    with st.expander("📄 Radiology Report", expanded=True):
+        st.components.v1.html(html, height=600)
+    st.session_state.setdefault("reports", []).append(html)
+    st.download_button(
+    label="⬇️ Download Report as HTML",
+    data=html,
+    file_name="radiology_report.html",
+    mime="text/html"
+    )
+    st.session_state.setdefault("reports", []).append(html)
 
 SYSTEM_PROMPT = """
 ROLE
@@ -20,10 +38,10 @@ You are a radiology assistant.
 
 TOOLS
 1. analyse_image_base64(path:str)            -> RadiologyReport
-2. show_reference_images_tool(path:str)      -> dict
-3. send_email(to:list[str], subject:str,
-              body:str, cc:list[str]|None=[],
-              bcc:list[str]|None=[])         -> Gmail message ID
+2. show_reference_images_tool(confirm:str)   -> dict
+3. draft_report_html(diagnosis:str, recs:str,
+                    critical:bool, img_path:str|None) -> {
+                        subject, mimeType, body }
 
 FLOW
 A) Get image
@@ -33,8 +51,8 @@ B) Analyse image
 • Once you have <PATH> call: {"name":"analyse_image_base64","arguments":{"path":"<PATH>"}}
 
 C) Present result
-• Tool returns {critical, diagnosis_description, clinical_recommendations}
-• Show this summary:
+DISPLAY THE RESULT of "analyse_image_base64" AS A MARKDOWN TABLE:Tool returns {critical, diagnosis_description, clinical_recommendations}
+• Show this summary before moving to D:
     Diagnosis: <diagnosis_description>
     Recommendations: <clinical_recommendations>
     Critical: Yes/No
@@ -46,19 +64,21 @@ D) Offer reference images ── ALWAYS happens first
 • After the tool finishes —or if the user said “no” —continue to step E.
 
 E) Handle critical cases ── ONLY if critical == true
-• Ask: “This case is marked as critical. Would you like to send it for peer review?”
-• If user agrees:
-    1. Draft a plain-text email (from Dr. Mahdi Ghodsi) with the summary.
-    2. Show the draft and ask: “Would you like me to send this email?”
-    3. If user confirms sending:
-        Ask for recipient address.
-        Call IMMEDIATELY:
-        {"name":"send_email","arguments":{"to":["<EMAIL>"],"subject":"<SUBJECT>","body":"<BODY>"}}
+• Ask: “This case is marked as critical. Would you like to draft a report for for peer review?”
+• If the user replies yes/yep/sure/etc, you MUST call this tool:
+    {"name":"draft_report_html",
+     "arguments":{
+        "diagnosis":"<diagnosis>",
+        "recs":"<recommendations>",
+        "critical":true,
+        "img_path":"<PATH>"
+     }}
+
 
 RULES
+• Do NOT generate or summarize report manually.
 • Never skip a step.
 • D must finish (or be declined) before E begins.
-• Never send an email without explicit confirmation.
 • Never invent clinical data.
 """.strip()
 
@@ -71,8 +91,8 @@ async def build_orchestrator():
 
     return Agent(
         model=orch_model,
-        mcp_servers=[gmail_server],
-        tools=[analyse_image_base64, show_reference_images_tool],
+        # mcp_servers=[gmail_server],
+        tools=[analyse_image_base64, show_reference_images_tool, draft_report_html],
         system_prompt=SYSTEM_PROMPT,
         instrument=True,
     )
@@ -119,12 +139,21 @@ class StreamlitChatUI:
 
                                     if ev.result.tool_name == "show_reference_images_tool":
                                         self.show_reference_images()
+
+                                    elif ev.result.tool_name == "draft_report_html":
+                                        report = ev.result.content  
+                                        report_html = report.get("body", "")
+                                        show_html_report(report_html)
+
+                                        return  # skip streaming full_response
                     elif Agent.is_model_request_node(node):
                         async with node.stream(run.ctx) as s:
                             async for ev in s:
                                 if isinstance(ev, PartDeltaEvent) and isinstance(ev.delta, TextPartDelta):
-                                    full_response += ev.delta.content_delta
-                                    assistant_placeholder.markdown(full_response)
+                                    delta = ev.delta.content_delta
+                                    if not is_html_content(delta):
+                                        full_response += delta
+                                        assistant_placeholder.markdown(full_response)
 
             st.session_state.internal_history.extend(run.result.all_messages())
         st.session_state.messages.append({"role": "assistant", "content": full_response})
@@ -159,6 +188,11 @@ class StreamlitChatUI:
                                 if isinstance(ev, FunctionToolResultEvent):
                                     if ev.result.tool_name == "show_reference_images_tool":
                                         self.show_reference_images()
+                                    if ev.result.tool_name == "draft_report_html":
+                                        report_html = ev.result.output["body"]
+                                        self.show_html_report(report_html)
+                                        return  # Skip adding to chat history
+
                     elif Agent.is_model_request_node(node):
                         # 👇 DO NOT stream updates line by line
                         async with node.stream(run.ctx) as s:
@@ -204,6 +238,8 @@ def main():
                 f.write(uploaded_file.getbuffer())
             st.image(uploaded_file, caption="Uploaded Image", use_container_width=True)
             st.session_state["image_uploaded"] = True
+
+            st.session_state["uploaded_image_path"] = str(save_path.resolve())
             response_container = st.container()
             with st.spinner("Analyzing uploaded image..."):
                 asyncio.run(ui.process_upload_message(f"Analyze this image: {save_path}", response_container))
@@ -220,7 +256,6 @@ def main():
         with st.chat_message("assistant", avatar="🤖"):
             with st.spinner("💭 Thinking..."):
                 asyncio.run(ui.process_message(prompt))
-
 
 if __name__ == "__main__":
     main()
